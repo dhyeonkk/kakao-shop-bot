@@ -1,14 +1,12 @@
-// 카카오 챗봇 스킬 서버 (Vercel) - Gemini + 콜백
+// 카카오 챗봇 스킬 서버 (Vercel) - Gemini + 콜백 (waitUntil)
 //
-// 최적화: 가게 정보가 적으므로 임베딩 검색 없이 전체를 Gemini에 넘겨 답변.
-//         (임베딩 API 호출 0번 → 매우 빠름 → 카카오 시간 제한 안에 응답)
-//
-// 동작:
-//  1) 답변을 만들어 콜백 URL로 전송
-//  2) 마지막에 카카오에 ack 응답 (콜백 사용)
+// 핵심: 카카오에 "준비 중" ack를 즉시 보내고(타임아웃 방지),
+//       waitUntil로 백그라운드에서 답변 생성 후 콜백 전송.
+//       (waitUntil이 응답 후에도 함수를 살려둠 → 서버리스 조기종료 방지)
 //
 // 환경변수(Vercel): GEMINI_API_KEY
 
+import { waitUntil } from "@vercel/functions";
 import { STORES } from "./stores.js";
 
 const GEN_MODEL = "gemini-3-flash-preview";
@@ -26,7 +24,7 @@ async function callGemini(systemText, userText) {
     generationConfig: {
       maxOutputTokens: 512,
       temperature: 0.4,
-      thinkingConfig: { thinkingLevel: "minimal" }, // Gemini 3는 thinkingLevel 사용
+      thinkingConfig: { thinkingLevel: "minimal" },
     },
   };
   const res = await fetch(url, {
@@ -46,7 +44,6 @@ async function answerForStore(storeId, question) {
   if (!store) {
     return "죄송해요, 아직 안내 정보가 준비되지 않았어요. 매장으로 직접 문의해 주세요!";
   }
-  // 가게 정보 전체를 근거로 제공 (검색 없이)
   let info = "";
   for (const c of store.chunks) info += "- [" + c.category + "] " + c.content + "\n";
 
@@ -59,18 +56,26 @@ async function answerForStore(storeId, question) {
   return await callGemini(sys, usr);
 }
 
-// 카카오 simpleText 형식
 function simpleText(text) {
   return { version: "2.0", template: { outputs: [{ simpleText: { text } }] } };
 }
 
-// 콜백 URL로 최종 답변 전송
 async function sendCallback(callbackUrl, text) {
   await fetch(callbackUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(simpleText(text)),
   });
+}
+
+// 백그라운드 작업: 답변 생성 후 콜백 전송
+async function processInBackground(callbackUrl, storeId, utterance) {
+  try {
+    const answer = await answerForStore(storeId, utterance);
+    await sendCallback(callbackUrl, answer);
+  } catch (e) {
+    try { await sendCallback(callbackUrl, "죄송해요, 잠시 후 다시 시도해 주세요."); } catch (e2) {}
+  }
 }
 
 export default async function handler(req, res) {
@@ -86,13 +91,9 @@ export default async function handler(req, res) {
     const storeId = (req.query && req.query.store) || "S001";
 
     if (callbackUrl) {
-      // 답변을 만들어 콜백으로 보낸 뒤 ack 반환 (서버리스 조기종료 방지)
-      try {
-        const answer = await answerForStore(storeId, utterance);
-        await sendCallback(callbackUrl, answer);
-      } catch (e) {
-        try { await sendCallback(callbackUrl, "죄송해요, 잠시 후 다시 시도해 주세요."); } catch (e2) {}
-      }
+      // 1) 백그라운드 작업 예약 (응답 후에도 waitUntil이 함수를 살려둠)
+      waitUntil(processInBackground(callbackUrl, storeId, utterance));
+      // 2) 카카오에 즉시 ack 응답 → 타임아웃 방지
       res.status(200).json({
         version: "2.0",
         useCallback: true,
