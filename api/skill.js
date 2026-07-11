@@ -154,21 +154,21 @@ export default async function handler(req, res) {
     const storeId = (req.query && req.query.store) || "S001";
 
     if (callbackUrl) {
-      // 1) 카카오에 즉시 "준비 중" 응답 (5초 제한 회피)
+      // ★ 서버리스 함수는 응답을 보내면 곧바로 종료되므로,
+      //   "먼저 답변을 만들어 콜백으로 보낸 뒤" 마지막에 ack 응답을 보낸다.
+      //   (카카오 콜백은 최대 1분까지 기다려주므로 시간 안에 들어옴)
+      try {
+        const answer = await answerForStore(storeId, utterance);
+        await sendCallback(callbackUrl, answer);
+      } catch (e) {
+        try { await sendCallback(callbackUrl, "죄송해요, 잠시 후 다시 시도해 주세요."); } catch (e2) {}
+      }
+      // 콜백으로 실제 답을 이미 보냈으니, 여기서는 ack만 반환
       res.status(200).json({
         version: "2.0",
         useCallback: true,
         data: { text: "답변을 준비하고 있어요. 잠시만요! 🙂" },
       });
-
-      // 2) 백그라운드로 실제 답변 생성 후 콜백 전송
-      //    (응답을 이미 보냈으므로 여기서 시간 걸려도 됨)
-      try {
-        const answer = await answerForStore(storeId, utterance);
-        await sendCallback(callbackUrl, answer);
-      } catch (e) {
-        await sendCallback(callbackUrl, "죄송해요, 잠시 후 다시 시도해 주세요.");
-      }
       return;
     }
 
