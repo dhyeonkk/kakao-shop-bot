@@ -1,0 +1,7 @@
+{
+  "name": "kakao-shop-chatbot",
+  "version": "1.0.0",
+  "description": "카카오 챗봇 스킬 서버 (Gemini RAG + 콜백)",
+  "type": "module",
+  "private": true
+}
